@@ -19,7 +19,7 @@ from pathlib import Path
 from playwright.sync_api import TimeoutError as PWTimeout
 from playwright.sync_api import sync_playwright
 
-TINDER_URL = "https://tinder.com/app/recs"
+BASE_URL = "https://tinder.com"
 PROFILE_DIR = Path(__file__).with_name(".tinder-profile")
 
 # Text that means Tinder has stopped serving likes or profiles.
@@ -46,17 +46,17 @@ def dismiss_popups(page) -> None:
     page.keyboard.press("Escape")
 
 
-def wait_for_login(page) -> None:
+def wait_for_login(page, base: str) -> None:
     print("Waiting for you to log in to Tinder in the browser window...")
     while "/app/recs" not in page.url or not page.locator("[aria-label='Like'], button:has-text('Like')").count():
         if "/app" in page.url and "/app/recs" not in page.url:
-            page.goto(TINDER_URL)
+            page.goto(base + "/app/recs")
         time.sleep(2)
     print("Logged in, feed is loaded.")
 
 
-def check_distance(page, miles: int) -> None:
-    page.goto("https://tinder.com/app/profile/settings")
+def check_distance(page, base: str, miles: int) -> None:
+    page.goto(base + "/app/profile/settings")
     time.sleep(3)
     text = page_text(page)
     if f"{miles} mi" in text:
@@ -65,21 +65,22 @@ def check_distance(page, miles: int) -> None:
         print(f"Couldn't confirm Maximum Distance is {miles} mi. "
               "Check Settings -> Discovery -> Maximum Distance in the window, then press Enter.")
         input()
-    page.goto(TINDER_URL)
+    page.goto(base + "/app/recs")
     time.sleep(3)
 
 
-def run(max_likes: int, min_delay: float, max_delay: float, distance: int | None) -> None:
+def run(max_likes: int, min_delay: float, max_delay: float, distance: int | None,
+        base: str = BASE_URL, headless: bool = False) -> None:
     with sync_playwright() as p:
         ctx = p.chromium.launch_persistent_context(
-            str(PROFILE_DIR), headless=False, viewport={"width": 1200, "height": 900},
+            str(PROFILE_DIR), headless=headless, viewport={"width": 1200, "height": 900},
             geolocation=None, permissions=["geolocation"],
         )
         page = ctx.pages[0] if ctx.pages else ctx.new_page()
-        page.goto(TINDER_URL)
-        wait_for_login(page)
+        page.goto(base + "/app/recs")
+        wait_for_login(page, base)
         if distance:
-            check_distance(page, distance)
+            check_distance(page, base, distance)
 
         liked = 0
         try:
@@ -94,11 +95,16 @@ def run(max_likes: int, min_delay: float, max_delay: float, distance: int | None
 
                 # Right arrow is Tinder web's built-in shortcut for Like.
                 page.keyboard.press("ArrowRight")
+                time.sleep(random.uniform(min_delay, max_delay))
+
+                # Only count the like if Tinder didn't answer it with the paywall.
+                text = page_text(page)
+                if any(s in text for s in OUT_OF_LIKES):
+                    print("Tinder says you're out of likes. Stopping.")
+                    break
                 liked += 1
                 print(f"Liked {liked}")
-
-                time.sleep(random.uniform(min_delay, max_delay))
-                if "It's a Match" in page_text(page):
+                if "It's a Match" in text:
                     print("  It's a match!")
                 dismiss_popups(page)
         except KeyboardInterrupt:
@@ -115,10 +121,13 @@ def main() -> int:
     ap.add_argument("--max-delay", type=float, default=4.0, help="maximum seconds between likes")
     ap.add_argument("--check-distance", type=int, metavar="MILES", default=50,
                     help="confirm Maximum Distance is set to this before swiping (0 to skip)")
+    ap.add_argument("--base-url", default=BASE_URL, help=argparse.SUPPRESS)  # for testing against a mock
+    ap.add_argument("--headless", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args()
     if args.min_delay > args.max_delay:
         ap.error("--min-delay must be <= --max-delay")
-    run(args.max_likes, args.min_delay, args.max_delay, args.check_distance or None)
+    run(args.max_likes, args.min_delay, args.max_delay, args.check_distance or None,
+        args.base_url.rstrip("/"), args.headless)
     return 0
 
 
